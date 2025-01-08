@@ -1,0 +1,7 @@
+.ipynb_checkpoints/
+mlp_wav2vec/
+rrl/
+models/
+SSL_Anti-spoofing/
+rrl_source/
+*.csv

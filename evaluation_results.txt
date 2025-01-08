@@ -1,0 +1,6 @@
+Confusion Matrix:
+[[0 1]
+ [0 2]]
+
+ROC AUC: 0.5
+EER: 0.9740835599443111
