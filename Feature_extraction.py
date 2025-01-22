@@ -37,8 +37,8 @@ class FeatureExtractor:
                 all_features.append(combined_features)
             else:
                 segment_labels = labels[file_id]
-                segment_length = int(window_size * sr)
-                hop_length = int(hop_size * sr)
+                segment_length = int(self.window_size * sr)
+                hop_length = int(self.hop_size * sr)
 
                 for i, seg_label in enumerate(segment_labels):
                     start = i * hop_length
@@ -105,16 +105,16 @@ class ProcessAudios:
             # Load labels and process dataset
         labels = self.load_labels(self.utterance_label_path if self.extract_utterance_level else self.segment_label_path, self.extract_utterance_level)
         audio_files = glob(self.train_audio_path)
-        audio_files = audio_files[:10]
+        # audio_files = audio_files[:500]
         wav2vec_processor, wave2vec_model = self.load_models()
         feature_extractor = FeatureExtractor( wav2vec_processor, wave2vec_model, self.device, self.extract_utterance_level)
         features = feature_extractor.extract_features(audio_files, labels)
 
         # Save features in parts
-        part_size = 5
+        part_size = 10000
         for i in range(0, len(features), part_size):
             part_features = features[i:i + part_size]
-            part_name = f"{save_path}train_{'HT_utterance' if extract_utterance_level else 'segment'}_merged_part_{i // part_size + 1}.csv"
+            part_name = f"{self.save_path}train_{'HT_utterance' if extract_utterance_level else 'segment'}_merged_part_{i // part_size + 1}.csv"
             pd.DataFrame(part_features).to_csv(part_name, index=False)
         
         return features
@@ -152,13 +152,14 @@ if __name__ == "__main__":
     train_audio_path = os.path.join(data_root, "train/conbine/*.wav")
     segment_label_path = os.path.join(data_root, "HAD_train_label.txt")
     utterance_label_path = os.path.join(data_root, "HAD_train_label.txt")
-    save_path = "/mnt/d/test_features/"
+    features_save_path = "./../features/"
+    os.makedirs(features_save_path, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     extract_utterance_level=True
 
-    proecss_audios = ProcessAudios(data_root, train_audio_path, segment_label_path, utterance_label_path, extract_utterance_level, save_path, device)
+    proecss_audios = ProcessAudios(data_root, train_audio_path, segment_label_path, utterance_label_path, extract_utterance_level, features_save_path, device)
     features = proecss_audios.process()
-    print(f"Features extracted and saved in {save_path}; Features shape: {len(features)}")
+    print(f"Features extracted and saved in {features_save_path}; Features shape: {len(features)}")
 
 
 
