@@ -277,19 +277,23 @@ class SpecnetUtils:
         plt.colorbar()
         plt.title(title)
         plt.savefig(save_path)
-        plt.show()
+        # plt.show()
 
 
 # Merge the files
+data_set_name = "PartialSpoof"
 features_dir = "./../features"
 emb_save_dir = "./../embeddings"
-os.makedirs(emb_save_dir, exist_ok=True)  # Create directory if it doesn't exist
 model_save_dir = "./../weights"
+tsne_save_dir = "./../TSNE"
+# os.makedirs(features_dir, exist_ok=True)  # Create directory if it doesn't exist
+os.makedirs(emb_save_dir, exist_ok=True)  # Create directory if it doesn't exist
 os.makedirs(model_save_dir, exist_ok=True)  # Create directory if it doesn't exist
-output_file = "merged_features.csv"
+os.makedirs(tsne_save_dir, exist_ok=True)  # Create directory if it doesn't exist
+output_file = f"{data_set_name}_merged_features.csv"
 data_preprocessor = DataPreprocessor()
-# merged_DF = data_preprocessor.merge_csv_files(features_dir, output_file)
-# print(f"Merged data shape: {merged_DF.shape}")
+merged_DF = data_preprocessor.merge_csv_files(features_dir, output_file)
+print(f"Merged data shape: {merged_DF.shape}")
 merged_DF = pd.read_csv(os.path.join(features_dir, output_file))   # temporary addition to read the merged file
 features, labels = data_preprocessor.preprocess_data(merged_DF)
 train_loader, val_loader, test_loader = data_preprocessor.create_dataloaders()
@@ -309,14 +313,14 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 specnet_trainer = SpecnetTrainer(specnet_model, criterion, optimizer, device)
 specnet_trainer.train(train_loader, val_loader, epochs=10)  #temporary using train_loader for validation
 specnet_utils = SpecnetUtils(specnet_model)
-specnet_utils.save_model(model_save_dir, weights_name="specnet_weights.pth")
-emb_save_path = os.path.join(emb_save_dir, 'specnet_emb.csv')
+specnet_utils.save_model(model_save_dir, weights_name=f"{data_set_name}_specnet_weights.pth")
+emb_save_path = os.path.join(emb_save_dir, f"{data_set_name}_specnet_emb.csv")
 specnet_utils.generate_embeddings(merged_DF,emb_save_path)
 
 # Load the model and generate embeddings
 specnet_model = AttentionModel(input_dim=input_dim, embedding_dim=embedding_dim, num_classes=num_classes).cuda()
-specnet_model.load_state_dict(torch.load(os.path.join(model_save_dir, "specnet_weights.pth")))
+specnet_model.load_state_dict(torch.load(os.path.join(model_save_dir, f"{data_set_name}_specnet_weights.pth")))
 specnet_utils = SpecnetUtils(specnet_model)
 specnet_utils.generate_embeddings(merged_DF,emb_save_path)
-specnet_utils.plot_tsne(features[:80000], labels[:80000], "t-SNE Before Training", "tsne_before.png", plot_type='features')
-specnet_utils.plot_tsne(features[:80000], labels[:80000], "t-SNE After Training", "tsne_after.png", plot_type='embeddings')
+specnet_utils.plot_tsne(features[:80000], labels[:80000], "t-SNE Before Training", os.path.join(tsne_save_dir,f"{data_set_name}_tsne_before.png"), plot_type='features')
+specnet_utils.plot_tsne(features[:80000], labels[:80000], "t-SNE After Training", os.path.join(tsne_save_dir,f"{data_set_name}_tsne_after.png"), plot_type='embeddings')

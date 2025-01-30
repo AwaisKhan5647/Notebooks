@@ -9,7 +9,10 @@ from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2Model
 from sklearn.feature_selection import mutual_info_classif
 from sklearn.preprocessing import StandardScaler
 import argparse
-
+from concurrent.futures import ThreadPoolExecutor
+import concurrent.futures
+from tqdm import tqdm
+import threading
 
 class FeatureExtractor:
     def __init__(self, wav2vec_processor, wave2vec_model, device, extract_utterance_level=True):
@@ -21,41 +24,68 @@ class FeatureExtractor:
         self.extract_utterance_level = extract_utterance_level  # Set to True for utterance-level, False for segment-level
 
         # Main processing function
-    def extract_features(self, audio_files, labels):
-        all_features = []
-        for audio_file in tqdm(audio_files, desc="Processing files"):
-            file_id = os.path.basename(audio_file).replace('.wav', '')
-            if file_id not in labels:
-                continue
+    def extract_features_single(self, audio_file, labels):
+        """Process a single audio file to extract features."""
+        file_id = os.path.basename(audio_file).replace('.wav', '')
+        if file_id not in labels:
+            return None  # Skip if no label is found
 
-            y, sr = librosa.load(audio_file, sr=16000)
-            if self.extract_utterance_level:
-                label = labels[file_id]
-                handcrafted_features = self.extract_handcrafted_features(y, sr)
-                wav2vec_features = self.extract_wav2vec_features(y, sr)
-                combined_features = np.concatenate(([file_id], handcrafted_features, wav2vec_features, [label]))
-                all_features.append(combined_features)
-            else:
-                segment_labels = labels[file_id]
-                segment_length = int(self.window_size * sr)
-                hop_length = int(self.hop_size * sr)
+        y, sr = librosa.load(audio_file, sr=16000)
+        features = []
 
-                for i, seg_label in enumerate(segment_labels):
-                    start = i * hop_length
-                    end = start + segment_length
-                    segment = (
-                        np.pad(y[start:], (0, segment_length - len(y[start:])), mode='edge')
+        if self.extract_utterance_level:
+            label = labels[file_id]
+            handcrafted_features = self.extract_handcrafted_features(y, sr)
+            wav2vec_features = self.extract_wav2vec_features(y, sr)
+            combined_features = np.concatenate(([file_id], handcrafted_features, wav2vec_features, [label]))
+            features.append(combined_features)
+        else:
+            segment_labels = labels[file_id]
+            segment_length = int(self.window_size * sr)
+            hop_length = int(self.hop_size * sr)
+
+            for i, seg_label in enumerate(segment_labels):
+                start = i * hop_length
+                end = start + segment_length
+                segment = (
+                    np.pad(y[start:], (0, segment_length - len(y[start:])), mode='edge')
                     if end > len(y)
                     else y[start:end]
-                    )
+                )
 
-                    # Extract features
-                    handcrafted_features = self.extract_handcrafted_features(segment, sr)
-                    wav2vec_features = self.extract_wav2vec_features(segment, sr)
-                    combined_features = np.concatenate(([file_id], handcrafted_features, wav2vec_features, [seg_label]))
-                    all_features.append(combined_features)
+                # Extract features
+                handcrafted_features = self.extract_handcrafted_features(segment, sr)
+                wav2vec_features = self.extract_wav2vec_features(segment, sr)
+                combined_features = np.concatenate(([file_id], handcrafted_features, wav2vec_features, [seg_label]))
+                features.append(combined_features)
+
+        return features
+
+    def extract_features(self, audio_files, labels):
+        """Extract features using multithreading with progress tracking."""
+        all_features = []
+        lock = threading.Lock()  # Lock for thread-safe tqdm updates
+
+        with ThreadPoolExecutor() as executor, tqdm(total=len(audio_files), desc="Processing files") as pbar:
+            futures = []
+
+            # Submit tasks to threads
+            for audio_file in audio_files:
+                futures.append(executor.submit(self._process_with_progress, audio_file, labels, lock, pbar))
+
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                if result:  # Append only if the result is not None
+                    all_features.extend(result)
 
         return np.array(all_features)
+
+    def _process_with_progress(self, audio_file, labels, lock, pbar):
+        """Helper method to process a file and update the progress bar."""
+        result = self.extract_features_single(audio_file, labels)
+        with lock:  # Update the progress bar safely
+            pbar.update(1)
+        return result
 
 
     def extract_wav2vec_features(self, segment, sr): 
@@ -91,7 +121,7 @@ class FeatureExtractor:
 
 
 class ProcessAudios:
-    def __init__(self, data_root, train_audio_path, segment_label_path, utterance_label_path, extract_utterance_level, save_path, device):
+    def __init__(self, data_root, train_audio_path, segment_label_path, utterance_label_path, extract_utterance_level, save_path, device, dataset_name):
         self.data_root = data_root
         self.train_audio_path = train_audio_path
         self.segment_label_path = segment_label_path
@@ -99,6 +129,7 @@ class ProcessAudios:
         self.extract_utterance_level = extract_utterance_level
         self.save_path = save_path
         self.device = device
+        self.dataset_name = dataset_name
 
     def process(self):
         print("Arguments received:")
@@ -114,7 +145,7 @@ class ProcessAudios:
         part_size = 10000
         for i in range(0, len(features), part_size):
             part_features = features[i:i + part_size]
-            part_name = f"{self.save_path}train_{'HT_utterance' if extract_utterance_level else 'segment'}_merged_part_{i // part_size + 1}.csv"
+            part_name = os.path.join(self.save_path,f"{self.dataset_name}_train_{'HT_utterance' if extract_utterance_level else 'segment'}_merged_part_{i // part_size + 1}.csv")
             pd.DataFrame(part_features).to_csv(part_name, index=False)
         
         return features
@@ -138,9 +169,9 @@ class ProcessAudios:
                 for line in file:
                     parts = line.strip().split(' ')
                     if len(parts) >= 2:
-                        file_id = parts[0].strip()
+                        file_id = parts[1].strip()
                         label = parts[-1].strip()
-                        labels[file_id] = 0 if label == '0' else 1
+                        labels[file_id] = 0 if label == 'spoof' else 1
         else:
             labels = np.load(label_file, allow_pickle=True).item()
         return labels
@@ -148,16 +179,18 @@ class ProcessAudios:
 
 
 if __name__ == "__main__":
-    data_root = "/mnt/f/Awais_data/Datasets/Halftruth/HAD_train"
-    train_audio_path = os.path.join(data_root, "train/conbine/*.wav")
-    segment_label_path = os.path.join(data_root, "HAD_train_label.txt")
-    utterance_label_path = os.path.join(data_root, "HAD_train_label.txt")
-    features_save_path = "./../features/"
+    datasets_root = "/mnt/f/Awais_data/Datasets"
+    dataset_name = "PartialSpoof"  # Specify the dataset name here (e.g., "Halftruth", "PartialSpoof", "wavefake_dataset")
+    data_root = os.path.join(datasets_root, dataset_name) # Construct paths dynamically based on the dataset name
+    train_audio_path = os.path.join(data_root, "Train/con_wav/*.wav")
+    segment_label_path = os.path.join(data_root, "database_segment_labels/database/segment_labels/train_seglab_0.16.npy")
+    utterance_label_path = os.path.join(data_root, "protocols/PartialSpoof_LA_cm_protocols/PartialSpoof.LA.cm.train.trl.txt")
+    features_save_path = "./../features"
     os.makedirs(features_save_path, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     extract_utterance_level=True
 
-    proecss_audios = ProcessAudios(data_root, train_audio_path, segment_label_path, utterance_label_path, extract_utterance_level, features_save_path, device)
+    proecss_audios = ProcessAudios(data_root, train_audio_path, segment_label_path, utterance_label_path, extract_utterance_level, features_save_path, device, dataset_name)
     features = proecss_audios.process()
     print(f"Features extracted and saved in {features_save_path}; Features shape: {len(features)}")
 
